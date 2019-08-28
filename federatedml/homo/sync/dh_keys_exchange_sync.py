@@ -15,7 +15,7 @@
 #
 
 from federatedml.homo.utils.scatter import Scatter
-from federatedml.homo.utils.secret import DiffieHellman
+from federatedml.secureprotol.fate_diffie_hellman import DiffieHellman
 from federatedml.util import consts
 from federatedml.util.transfer_variable.base_transfer_variable import Variable
 

@@ -18,14 +18,15 @@ import operator
 from functools import reduce
 
 from federatedml.homo.sync import party_weights_sync, model_scatter_sync, \
-    loss_transfer_sync, model_broadcast_sync
+    loss_transfer_sync, model_broadcast_sync, is_converge_sync
 from federatedml.homo.weights import Parameters
 
 
 class Arbiter(party_weights_sync.Arbiter,
               model_scatter_sync.Arbiter,
               model_broadcast_sync.Arbiter,
-              loss_transfer_sync.Arbiter):
+              loss_transfer_sync.Arbiter,
+              is_converge_sync.Arbiter):
 
     # noinspection PyAttributeOutsideInit
     def initialize_aggregator(self, use_party_weight=True):
@@ -52,6 +53,8 @@ class Arbiter(party_weights_sync.Arbiter,
         self._register_loss_transfer(host_loss_transfer=transfer_variables.host_loss,
                                      guest_loss_transfer=transfer_variables.guest_loss)
 
+        self._register_is_converge(is_converge_variable=transfer_variables.is_converge)
+
     def aggregate_model(self, ciphers_dict=None, suffix=tuple()) -> Parameters:
         models = self.get_models_for_aggregate(ciphers_dict, suffix=suffix)
         num_clients = len(models)
@@ -71,6 +74,7 @@ class Arbiter(party_weights_sync.Arbiter,
         """
         model = self.aggregate_model(ciphers_dict=ciphers_dict, suffix=suffix)
         self._send_model(model.for_remote(), ciphers_dict=ciphers_dict, suffix=suffix)
+        return model
 
     def get_models_for_aggregate(self, ciphers_dict=None, suffix=tuple()):
         return self._get_models(ciphers_dict=ciphers_dict, suffix=suffix)
@@ -94,7 +98,8 @@ class Arbiter(party_weights_sync.Arbiter,
 class Guest(party_weights_sync.Guest,
             model_scatter_sync.Guest,
             loss_transfer_sync.Guest,
-            model_broadcast_sync.Guest):
+            model_broadcast_sync.Guest,
+            is_converge_sync.Guest):
 
     def initialize_aggregator(self, party_weight):
         self.send_party_weight(party_weight)
@@ -117,6 +122,8 @@ class Guest(party_weights_sync.Guest,
 
         self._register_loss_transfer(loss_transfer=transfer_variables.guest_loss_transfer)
 
+        self._register_is_converge(is_converge_variable=transfer_variables.is_converge)
+
     def aggregate_and_get(self, model: Parameters, suffix=tuple()):
         self.send_model_for_aggregate(weights=model, suffix=suffix)
         return self.get_aggregated_model(suffix=suffix)
@@ -131,7 +138,8 @@ class Guest(party_weights_sync.Guest,
 class Host(party_weights_sync.Host,
            model_scatter_sync.Host,
            loss_transfer_sync.Host,
-           model_broadcast_sync.Host):
+           model_broadcast_sync.Host,
+           is_converge_sync.Host):
 
     def initialize_aggregator(self, party_weight):
         self.send_party_weight(party_weight)
@@ -153,6 +161,8 @@ class Host(party_weights_sync.Host,
         self._register_model_broadcaster(model_transfer=transfer_variables.aggregated_model)
 
         self._register_loss_transfer(loss_transfer=transfer_variables.host_loss_transfer)
+
+        self._register_is_converge(is_converge_variable=transfer_variables.is_converge)
 
     def aggregate_and_get(self, model: Parameters, suffix=tuple()):
         self.send_model_for_aggregate(weights=model, suffix=suffix)

@@ -14,46 +14,55 @@
 #  limitations under the License.
 #
 
+from arch.api.utils.log_utils import LoggerFactory
+from fate_flow.entity.metric import MetricMeta, MetricType, Metric
+from federatedml.homo.procedure import aggregator, random_padding_cipher
 from federatedml.model_base import ModelBase
-from federatedml.homo.algo_flow import random_padding_cipher_flow
+from federatedml.optim import convergence
+from federatedml.param.logistic_regression_param import LogisticParam
+from federatedml.util.transfer_variable.homo_lr_transfer_variable import HomoLRTransferVariable
+
+LOGGER = LoggerFactory.get_logger()
 
 
 class HomeDNNArbiter(ModelBase):
 
     def __init__(self):
         super().__init__()
-        self.algo_flow = random_padding_cipher_flow.arbiter()
+        self.aggregator = aggregator.Arbiter()
+        self.cipher = random_padding_cipher.Arbiter()
 
-    def _init_model(self, model):
-        self.max_iter = model.max_iter
+        self.loss_history = []
+        self.is_converged = False
+
+    def _init_model(self, params: LogisticParam):
+        self.transfer_variable = HomoLRTransferVariable()
+        self.max_iter = params.max_iter
+        self.eps = params.eps
+        self.converge_func = convergence.AbsConverge(eps=self.eps)
+
+        self.aggregator.register_aggregator(self.transfer_variable)
+        self.cipher.register_random_padding_cipher(self.transfer_variable)
+        self.converge_flag_transfer = self.transfer_variable.converge_flag
 
     def fit(self, data=None):
         if not self.need_run:
             return data
 
-        self.algo_flow.initialize()
+        self.aggregator.initialize_aggregator()
+        self.cipher.exchange_secret_keys()
 
         for iter_num in range(self.max_iter):
 
-            self.algo_flow.aggregate(suffix=(iter_num,))
+            final_model = self.aggregator.aggregate_and_broadcast(suffix=(iter_num,))
 
-            # Part3: Aggregate models receive from each party
-            final_model = self.aggregator.aggregate_model(transfer_variable=self.transfer_variable,
-                                                          iter_num=iter_num,
-                                                          party_weights=self.party_weights,
-                                                          host_encrypter=self.host_encrypter)
-            total_loss = self.aggregator.aggregate_loss(transfer_variable=self.transfer_variable,
-                                                        iter_num=iter_num,
-                                                        party_weights=self.party_weights,
-                                                        host_use_encryption=self.host_use_encryption)
-            # else:
-            #     total_loss = np.linalg.norm(final_model)
+            total_loss = self.aggregator.aggregate_loss(suffix=(iter_num,))
 
             self.loss_history.append(total_loss)
 
             if not self.need_one_vs_rest:
                 metric_meta = MetricMeta(name='train',
-                                         metric_type="LOSS",
+                                         metric_type=MetricType.LOSS,
                                          extra_metas={
                                              "unit_name": "iters"
                                          })
@@ -64,45 +73,11 @@ class HomeDNNArbiter(ModelBase):
                                      metric_data=[Metric(iter_num, total_loss)])
 
             LOGGER.info("Iter: {}, loss: {}".format(iter_num, total_loss))
-            # send model
-            final_model_id = self.transfer_variable.generate_transferid(self.transfer_variable.final_model, iter_num)
-            # LOGGER.debug("Sending final_model, model id: {}, final_model: {}".format(final_model_id, final_model))
-            federation.remote(final_model,
-                              name=self.transfer_variable.final_model.name,
-                              tag=final_model_id,
-                              role=consts.GUEST,
-                              idx=0)
-            for idx, encrypter in enumerate(self.host_encrypter):
-                encrypted_model = encrypter.encrypt_list(final_model)
 
-                federation.remote(encrypted_model,
-                                  name=self.transfer_variable.final_model.name,
-                                  tag=final_model_id,
-                                  role=consts.HOST,
-                                  idx=idx)
+            converge_flag = self.converge_func.is_converge(total_loss)
+            self.converge_flag_transfer.remote(converge_flag, suffix=(iter_num,))
 
-            if self.use_loss:
-                converge_flag = self.converge_func.is_converge(total_loss)
-            else:
-                converge_flag = self.converge_func.is_converge(final_model)
-            converge_flag_id = self.transfer_variable.generate_transferid(
-                self.transfer_variable.converge_flag,
-                iter_num)
-
-            federation.remote(converge_flag,
-                              name=self.transfer_variable.converge_flag.name,
-                              tag=converge_flag_id,
-                              role=consts.GUEST,
-                              idx=0)
-            federation.remote(converge_flag,
-                              name=self.transfer_variable.converge_flag.name,
-                              tag=converge_flag_id,
-                              role=consts.HOST,
-                              idx=-1)
-            self.set_coef_(final_model)
-            self.n_iter_ = iter_num
             if converge_flag:
                 self.is_converged = True
                 break
-        self._set_header()
         self.data_output = data
